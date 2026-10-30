@@ -8,9 +8,11 @@ COPY logging/request_logger.py \
 COPY logging/log_response.py \
     /opt/venv/lib/python3.12/site-packages/vllm/entrypoints/serve/middleware/log_response.py
 COPY logging/apply_logging_patch.py /tmp/apply_logging_patch.py
+COPY scripts/download_model.sh /opt/safeboard/download_model.sh
 
 RUN python /tmp/apply_logging_patch.py \
     && rm -f /tmp/apply_logging_patch.py \
+    && chmod 755 /opt/safeboard/download_model.sh \
     && useradd --create-home --uid 1000 --shell /usr/sbin/nologin safeboard \
     && mkdir -p /home/safeboard/.cache/huggingface /home/safeboard/.cache/vllm \
     && chown -R safeboard:safeboard /home/safeboard

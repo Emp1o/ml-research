@@ -74,6 +74,78 @@ curl http://localhost:8000/v1/chat/completions \
 3. 1.5B не влезает в лимит Docker Desktop → 0.5B + `max-model-len 512`
 4. v0.32.0 crash на первом запросе → pin `v0.31.0-arm64`
 
+## Этап 4 — Kubernetes: Deployment, Service, PVC, Secret, ConfigMap
+
+**Дата:** 2026-10-30
+
+**Статус:** манифесты готовы к `kubectl apply`. Прогон на minikube — на Mac (образ arm64).
+
+Под использует локальный образ `safeboard-vllm:0.31` (`imagePullPolicy: Never`). Скрипт `scripts/download_model.sh` копируется в образ и стоит в `command` пода: первый старт качает веса на PVC, следующий читает их с тома.
+
+### Образ в minikube (Mac arm64)
+
+Собирать на Mac. Узел minikube с драйвером docker на этой машине тоже arm64.
+
+```bash
+docker build -t safeboard-vllm:0.31 .
+minikube image load safeboard-vllm:0.31
+```
+
+Веса ~1 GiB плюс KV. В этапе 2 хватало Docker VM ~7.65 GiB при `--gpu-memory-utilization 0.5`. Если под Pending по памяти: `minikube start --cpus=4 --memory=8192`.
+
+### Секрет (плейсхолдеры)
+
+`k8s/secret.yaml` применяется как есть и не содержит настоящих токенов.
+
+| Ключ | Значение в git | Зачем |
+|---|---|---|
+| `HF_TOKEN` | пусто | токен Hugging Face для gated-моделей. Для `Qwen/Qwen2.5-0.5B-Instruct` пустое значение подходит. |
+| `API_KEY` | `REPLACE_ME` | Bearer. Клиент шлёт `Authorization: Bearer REPLACE_ME`. |
+
+На общем кластере заменить `API_KEY` (и `HF_TOKEN`, если модель gated) до apply и не коммитить боевые значения. После смены секрета перезапустить под: env читается на старте.
+
+### Apply
+
+```bash
+kubectl apply -f k8s/
+kubectl rollout status deployment/safeboard-vllm
+kubectl logs -f deployment/safeboard-vllm
+```
+
+Первый старт в логах: `downloading Qwen/Qwen2.5-0.5B-Instruct`. Повторный (`kubectl delete pod -l app=safeboard-vllm`) — `skipping download`, vLLM с локального каталога, `HF_HUB_OFFLINE=1`.
+
+Реплика одна, стратегия `Recreate` (PVC `ReadWriteOnce`). `/dev/shm` — emptyDir 1Gi, тот же запас, что `--shm-size=1g` в этапе 2.
+
+### Запрос
+
+```bash
+kubectl port-forward svc/safeboard-vllm 8000:8000
+```
+
+```bash
+curl http://localhost:8000/v1/chat/completions \
+  -H "Content-Type: application/json" \
+  -H "Authorization: Bearer REPLACE_ME" \
+  -d '{
+    "model": "Qwen/Qwen2.5-0.5B-Instruct",
+    "messages": [{"role": "user", "content": "Say hello in one short sentence."}],
+    "max_tokens": 32
+  }'
+```
+
+Имя модели в API — `SERVED_MODEL_NAME` из ConfigMap.
+
+### Параметры инференса без пересборки образа
+
+Правятся в `k8s/configmap.yaml` (`DTYPE`, `MAX_MODEL_LEN`, `GPU_MEMORY_UTILIZATION`, `MODEL_ID`, `MODEL_DIR`, `SERVED_MODEL_NAME`). Сервис слушает порт 8000, скрипт поднимает vLLM на `0.0.0.0:8000`. Затем:
+
+```bash
+kubectl apply -f k8s/configmap.yaml
+kubectl rollout restart deployment/safeboard-vllm
+```
+
+Другая модель — новый `MODEL_ID` и новый `MODEL_DIR` на том же PVC. Старый каталог остаётся на томе, пока его не удалить.
+
 ## План по дням (зафиксировано 30.10.2026)
 
 | Блок | Когда | Обязательно |

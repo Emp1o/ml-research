@@ -1,0 +1,16 @@
+# vLLM launch parameters. Edit this ConfigMap and restart the pod to apply
+# them; the image stays safeboard-vllm:0.31.
+# A different model needs both a new MODEL_ID and a new MODEL_DIR on the PVC.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: safeboard-vllm
+  labels:
+    app: safeboard-vllm
+data:
+  MODEL_ID: "Qwen/Qwen2.5-0.5B-Instruct"
+  MODEL_DIR: "/models/Qwen2.5-0.5B-Instruct"
+  SERVED_MODEL_NAME: "Qwen/Qwen2.5-0.5B-Instruct"
+  DTYPE: "float16"
+  MAX_MODEL_LEN: "512"
+  GPU_MEMORY_UTILIZATION: "0.5"
