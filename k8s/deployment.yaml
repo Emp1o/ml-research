@@ -1,0 +1,53 @@
+# Local image, loaded with: minikube image load safeboard-vllm:0.31
+# Pod command is the download script (image ENTRYPOINT remains "vllm serve").
+# Recreate keeps the ReadWriteOnce model volume on a single pod.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: safeboard-vllm
+  labels:
+    app: safeboard-vllm
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app: safeboard-vllm
+  template:
+    metadata:
+      labels:
+        app: safeboard-vllm
+    spec:
+      securityContext:
+        runAsUser: 1000
+        runAsGroup: 1000
+        fsGroup: 1000
+        runAsNonRoot: true
+      containers:
+        - name: vllm
+          image: safeboard-vllm:0.31
+          imagePullPolicy: Never
+          command: ["/opt/safeboard/download_model.sh"]
+          ports:
+            - name: http
+              containerPort: 8000
+          envFrom:
+            - configMapRef:
+                name: safeboard-vllm
+            - secretRef:
+                name: safeboard-vllm
+          volumeMounts:
+            - name: models
+              mountPath: /models
+            # vLLM workers need more than the default 64MiB /dev/shm (stage 2: --shm-size=1g).
+            - name: shm
+              mountPath: /dev/shm
+      volumes:
+        - name: models
+          persistentVolumeClaim:
+            claimName: safeboard-models
+        - name: shm
+          emptyDir:
+            medium: Memory
+            sizeLimit: 1Gi
