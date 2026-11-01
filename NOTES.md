@@ -1,158 +1,74 @@
-# SafeBoard ML Research — рабочие заметки
+# Технические заметки
 
-Краткие факты для итогового отчёта. Не путать с README.
+Почему решение собрано так. Команды локального запуска — в README.
 
-## Этап 2 — smoke: vLLM CPU + один chat-запрос
+## Версия vLLM и модель
 
-**Дата:** 2026-10-30
+Базовый образ — `vllm/vllm-openai-cpu:v0.31.0-arm64`. `requirements.txt` — freeze этого образа, пакет `vllm==0.31.0+cpu`. Dockerfile кладёт файл в образ как запись состава окружения. Пакеты уже стоят в базовом образе и при сборке заново не ставятся.
 
-**Статус:** успешно (JSON `chat.completion`, `finish_reason: stop`)
+vLLM 0.32.0 для этого стенда не подходит. Сервер на `v0.32.0` доходит до `Application startup complete`, но первый `POST /v1/chat/completions` роняет EngineCore: CPU-fallback `compute_slot_mapping` → `_compute_slot_mapping_kernel_impl` падает с `RuntimeError: Boolean value of Tensor with more than one value is ambiguous`. Это разъезд сигнатуры Triton-ядра и CPU-fallback, [vLLM #61131](https://github.com/vllm-project/vllm/issues/61131). Образ закреплён на 0.31.0. Требование задания (vLLM ≥ 0.27) выполнено. На базовом образе `v0.31.0-arm64` chat-запрос на CPU доходит до `finish_reason: stop`.
 
-### Образ
+Модель — `Qwen/Qwen2.5-0.5B-Instruct`. `Qwen2.5-1.5B-Instruct` на VM Docker Desktop около 7.65 GiB вместе с KV-cache и накладными расходами стабильно не помещалась. Контекст ограничен `MAX_MODEL_LEN=512`. Dtype — `float16`: на этом CPU-образе он занимает меньше памяти, чем bf16.
 
-- Рабочий: `vllm/vllm-openai-cpu:v0.31.0-arm64`
-- Не использовать: `latest` / `latest-arm64` (= **v0.32.0** на момент проверки)
+## Образ и rootless
 
-На **v0.32.0** сервер поднимается (`Application startup complete`), но **первый** `POST /v1/chat/completions` роняет EngineCore:
+Веса в слои образа не копируются. На сборке:
 
-- место: `compute_slot_mapping` → CPU fallback `_compute_slot_mapping_kernel_impl`
-- ошибка: `RuntimeError: Boolean value of Tensor with more than one value is ambiguous`
-- причина: разъезд сигнатур Triton-ядра и CPU-fallback (баг [vLLM #61131](https://github.com/vllm-project/vllm/issues/61131))
-- обход: закрепить **v0.31.0** (требование задания: vLLM ≥ 0.27 — выполняется)
+- `logging/request_logger.py` и `logging/log_response.py` заменяют одноимённые модули в site-packages vLLM;
+- `logging/apply_logging_patch.py` правит установленный vLLM 0.31 и удаляется из финального слоя;
+- `scripts/download_model.sh` копируется в `/opt/safeboard/download_model.sh`;
+- создаётся пользователь `safeboard` (uid 1000, shell `nologin`), процесс идёт от `USER safeboard`.
 
-### Модель
+Deployment повторяет то же снаружи: `runAsUser`, `runAsGroup` и `fsGroup` равны 1000, `runAsNonRoot: true`. `HOME`, `HF_HOME` и `VLLM_CACHE_ROOT` в образе указывают в домашний каталог этого пользователя. Каталог весов — отдельный том `/models`.
 
-- `Qwen/Qwen2.5-0.5B-Instruct`
-- Почему не 1.5B: Docker Desktop VM ~7.65 GiB RAM; веса ~0.9 GiB + KV/overhead не влезают стабильно вместе с утилизацией памяти
+## Логирование
 
-### Команда запуска
+В stdout/stderr нет текста промпта и ответа. Факт обращения остаётся.
 
-```bash
-docker run --rm -it \
-  --shm-size=1g \
-  -p 8000:8000 \
-  -v "$HOME/.cache/huggingface:/root/.cache/huggingface" \
-  -e HF_HUB_ENABLE_HF_TRANSFER=0 \
-  vllm/vllm-openai-cpu:v0.31.0-arm64 \
-  --model Qwen/Qwen2.5-0.5B-Instruct \
-  --dtype float16 \
-  --max-model-len 512 \
-  --gpu-memory-utilization 0.5 \
-  --api-key safeboard-local-key
-```
+Подменённый `RequestLogger`:
 
-### Флаги (зачем)
+- `log_inputs` пишет id запроса и число токенов промпта;
+- `log_outputs` пишет число выходных токенов, `finish_reason` и признак стрима;
+- `log_request_body` пишет тип объекта.
 
-| Флаг | Зачем |
-|------|--------|
-| `--shm-size=1g` | дефолтный `/dev/shm` 64M мало для multiprocessing vLLM |
-| `--dtype float16` | меньше RAM, чем bf16 на CPU в этом образе |
-| `--max-model-len 512` | ограничивает размер KV-cache |
-| `--gpu-memory-utilization 0.5` | на CPU — доля RAM под KV/пул (0.92 давал OOM) |
-| `--api-key …` | Bearer для OpenAI-совместимого API |
-| HF cache volume | не качать веса заново при каждом `docker run` |
+Текст промпта, тело запроса и сгенерированный текст в эти вызовы не передаются.
 
-### Smoke-запрос
+Патч в `entrypoints/launchers/api_server/app_state.py` и `entrypoints/launchers/render/app_state.py` всегда создаёт `RequestLogger`, в том числе при выключенном `enable_log_requests`. В `entrypoints/chat_utils.py` отладочная строка `Input prompt` заменена на длину текста в символах.
 
-```bash
-curl http://localhost:8000/v1/chat/completions \
-  -H "Content-Type: application/json" \
-  -H "Authorization: Bearer safeboard-local-key" \
-  -d '{
-    "model": "Qwen/Qwen2.5-0.5B-Instruct",
-    "messages": [{"role": "user", "content": "Say hello in one short sentence."}],
-    "max_tokens": 32
-  }'
-```
+`logging/log_response.py` подменяет middleware, которое vLLM включает переменной `VLLM_DEBUG_LOG_API_SERVER_RESPONSE`. Оно пишет путь, HTTP-статус и размер ответа в байтах. Тело ответа не пишет.
 
-**Ответ (фрагмент):** `content`: `Hello! It's nice to meet you!`, `system_fingerprint`: `vllm-0.31.0-…`, `usage`: prompt 36 / completion 10.
+## Старт и PVC
 
-### Промежуточные проблемы (для отчёта)
+Команда контейнера — `/opt/safeboard/download_model.sh`. В манифесте `image: safeboard-vllm:0.31` и `imagePullPolicy: Never`. ENTRYPOINT базового образа (`vllm serve`) манифест перекрывает.
 
-1. Малый `/dev/shm` → увеличить `--shm-size`
-2. Высокий `--gpu-memory-utilization` → OOM → снизить до `0.5`
-3. 1.5B не влезает в лимит Docker Desktop → 0.5B + `max-model-len 512`
-4. v0.32.0 crash на первом запросе → pin `v0.31.0-arm64`
+Скрипт считает веса скачанными, если в `MODEL_DIR` есть `config.json` и хотя бы один файл `*.safetensors` или `*.bin`. Иначе вызывает `huggingface_hub.snapshot_download` в этот каталог и печатает `downloading …` и `download complete: …`. Если после вызова весов нет, скрипт завершается с кодом 1. Повторный старт печатает `model weights present at …; skipping download`.
 
-## Этап 4 — Kubernetes: Deployment, Service, PVC, Secret, ConfigMap
+Дальше скрипт выставляет `HF_HUB_OFFLINE=1` и `TRANSFORMERS_OFFLINE=1` и заменяет себя на `vllm serve` локального каталога (`--host 0.0.0.0`, порт 8000). `HF_HUB_ENABLE_HF_TRANSFER=0`.
 
-**Дата:** 2026-10-30
+`HF_HOME` в образе равен `/home/safeboard/.cache/huggingface`. Подстановка `/models/.hf-home` в скрипте срабатывает только когда переменная пуста, поэтому в поде кэш Hub остаётся в домашнем каталоге контейнера. Признак «веса на месте» и повторный офлайн-старт завязаны на файлы в `MODEL_DIR` на PVC, а не на этот кэш. Домашний каталог при пересоздании пода пропадает; каталог на томе остаётся.
 
-**Статус:** манифесты готовы к `kubectl apply`. Прогон на minikube — на Mac (образ arm64).
+PVC `safeboard-models`: 5 Gi, `ReadWriteOnce`, монтирование в `/models`. Реплика одна, стратегия Deployment — `Recreate`, чтобы следующий под забирал том после остановки предыдущего.
 
-Под использует локальный образ `safeboard-vllm:0.31` (`imagePullPolicy: Never`). Скрипт `scripts/download_model.sh` копируется в образ и стоит в `command` пода: первый старт качает веса на PVC, следующий читает их с тома.
+Пустой `HF_TOKEN` и значение `REPLACE_ME` скрипт снимает с окружения и в Hub не отправляет. Непустое значение экспортируется как `HUGGING_FACE_HUB_TOKEN`. `API_KEY` обязателен и передаётся в `--api-key`.
 
-### Образ в minikube (Mac arm64)
+`/dev/shm` в контейнере по умолчанию 64 MiB, воркерам vLLM этого мало. Под монтирует `emptyDir` (`medium: Memory`, `sizeLimit: 1Gi`).
 
-Собирать на Mac. Узел minikube с драйвером docker на этой машине тоже arm64.
+## ConfigMap и Secret
 
-```bash
-docker build -t safeboard-vllm:0.31 .
-minikube image load safeboard-vllm:0.31
-```
+ConfigMap `safeboard-vllm` подключён через `envFrom`. Скрипт читает `MODEL_ID`, `MODEL_DIR`, `DTYPE`, `MAX_MODEL_LEN`, `GPU_MEMORY_UTILIZATION` и при наличии `SERVED_MODEL_NAME`.
 
-Веса ~1 GiB плюс KV. В этапе 2 хватало Docker VM ~7.65 GiB при `--gpu-memory-utilization 0.5`. Если под Pending по памяти: `minikube start --cpus=4 --memory=8192`.
+`VLLM_CPU_KVCACHE_SPACE=1` скрипт не разбирает: переменную наследует процесс `vllm serve`. Для CPU-бэкенда это бюджет KV-cache в гибибайтах. Единица держит резерв небольшим на VM Minikube.
 
-### Секрет (плейсхолдеры)
+`--enforce-eager` прописан в скрипте и запечён в образ. На прогоне 1 ноября 2026 в аргументах движка было `enforce_eager True`. Смена флага — правка скрипта и новая сборка.
 
-`k8s/secret.yaml` применяется как есть и не содержит настоящих токенов.
+Secret `safeboard-vllm` подключён тем же `envFrom`. В git лежат заглушки: `API_KEY: REPLACE_ME`, пустой `HF_TOKEN`. Боевые значения задаются локально перед `kubectl apply` и в коммит не входят. Под читает env на старте: после смены Secret его нужно перезапустить.
 
-| Ключ | Значение в git | Зачем |
-|---|---|---|
-| `HF_TOKEN` | пусто | токен Hugging Face для gated-моделей. Для `Qwen/Qwen2.5-0.5B-Instruct` пустое значение подходит. |
-| `API_KEY` | `REPLACE_ME` | Bearer. Клиент шлёт `Authorization: Bearer REPLACE_ME`. |
+Имя в ответе `/v1/models` берётся из `SERVED_MODEL_NAME`. Новые параметры: `kubectl apply -f k8s/configmap.yaml` и `kubectl rollout restart deployment/safeboard-vllm`. Новый `MODEL_ID` при старом `MODEL_DIR`, если в каталоге уже есть веса, загрузку не повторяет: скрипт смотрит на файлы, а не на id репозитория.
 
-На общем кластере заменить `API_KEY` (и `HF_TOKEN`, если модель gated) до apply и не коммитить боевые значения. После смены секрета перезапустить под: env читается на старте.
+## Память и Minikube
 
-### Apply
+На CPU `--gpu-memory-utilization` задаёт долю RAM под пул KV. При локальном прогоне значение 0.92 приводило к OOM; в ConfigMap стоит `0.5`. Рядом ограничены длина контекста (`512`) и `VLLM_CPU_KVCACHE_SPACE` (`1`).
 
-```bash
-kubectl apply -f k8s/
-kubectl rollout status deployment/safeboard-vllm
-kubectl logs -f deployment/safeboard-vllm
-```
+Запас памяти VM Docker Desktop для этого стенда — 8–9 GiB. Образ arm64; узел Minikube с драйвером docker на Mac M4 тоже arm64. Прямой `minikube image load safeboard-vllm:0.31` может зависнуть. Надёжный путь — `docker save safeboard-vllm:0.31 | minikube image load -`.
 
-Первый старт в логах: `downloading Qwen/Qwen2.5-0.5B-Instruct`. Повторный (`kubectl delete pod -l app=safeboard-vllm`) — `skipping download`, vLLM с локального каталога, `HF_HUB_OFFLINE=1`.
-
-Реплика одна, стратегия `Recreate` (PVC `ReadWriteOnce`). `/dev/shm` — emptyDir 1Gi, тот же запас, что `--shm-size=1g` в этапе 2.
-
-### Запрос
-
-```bash
-kubectl port-forward svc/safeboard-vllm 8000:8000
-```
-
-```bash
-curl http://localhost:8000/v1/chat/completions \
-  -H "Content-Type: application/json" \
-  -H "Authorization: Bearer REPLACE_ME" \
-  -d '{
-    "model": "Qwen/Qwen2.5-0.5B-Instruct",
-    "messages": [{"role": "user", "content": "Say hello in one short sentence."}],
-    "max_tokens": 32
-  }'
-```
-
-Имя модели в API — `SERVED_MODEL_NAME` из ConfigMap.
-
-### Параметры инференса без пересборки образа
-
-Правятся в `k8s/configmap.yaml` (`DTYPE`, `MAX_MODEL_LEN`, `GPU_MEMORY_UTILIZATION`, `MODEL_ID`, `MODEL_DIR`, `SERVED_MODEL_NAME`). Сервис слушает порт 8000, скрипт поднимает vLLM на `0.0.0.0:8000`. Затем:
-
-```bash
-kubectl apply -f k8s/configmap.yaml
-kubectl rollout restart deployment/safeboard-vllm
-```
-
-Другая модель — новый `MODEL_ID` и новый `MODEL_DIR` на том же PVC. Старый каталог остаётся на томе, пока его не удалить.
-
-## План по дням (зафиксировано 30.10.2026)
-
-| Блок | Когда | Обязательно |
-|---|---|---|
-| **1** | 30.10 | Этап 2: модель + один ответ vLLM на CPU (+ черновик Dockerfile, если успеешь) |
-| **2** | 31.10 | Этап 3: образ rootless, pinned, логи без текста |
-| **3** | 1.11 | Этап 4: Deploy/Service + PVC + Secret + ConfigMap + Bearer |
-| **4** | 2.11 → **3.11 до ~18:00** | Кэш на PVC + README с нуля → полировка → **сдача**; бонусы только если база уже зелёная |
-
-Практический дедлайн сдачи: **~3.11.2026 18:00 MSK** (не тянуть до формальной даты портала 6.11).
+Проверка 1 ноября 2026 (MSK), Mac M4, Minikube: под поднялся, в логе есть `Application startup complete` и `enforce_eager True`, `GET /v1/models` с Bearer вернул 200. После `kubectl delete pod` следующий старт написал `model weights present … skipping download` и снова дошёл до готовности сервера.
