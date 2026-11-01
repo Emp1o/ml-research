@@ -147,8 +147,10 @@ kubectl rollout restart deployment/safeboard-vllm
 | `SERVED_MODEL_NAME` | `Qwen/Qwen2.5-0.5B-Instruct` | Имя модели в API |
 | `DTYPE` | `float16` | `--dtype` |
 | `MAX_MODEL_LEN` | `512` | `--max-model-len` |
-| `GPU_MEMORY_UTILIZATION` | `0.5` | `--gpu-memory-utilization` (на CPU — доля RAM под KV) |
+| `GPU_MEMORY_UTILIZATION` | `0.5` | `--gpu-memory-utilization`. При заданном `VLLM_CPU_KVCACHE_SPACE` на размер CPU KV почти не влияет |
 | `VLLM_CPU_KVCACHE_SPACE` | `1` | Переменная окружения vLLM: бюджет KV-cache CPU, в гибибайтах |
+| `VLLM_NO_USAGE_STATS` | `1` | Отказ от usage stats vLLM |
+| `DO_NOT_TRACK` | `1` | Тот же отказ: процесс не шлёт телеметрию |
 
 Другая модель — новые `MODEL_ID` и `MODEL_DIR` на том же PVC. Старый каталог на томе остаётся. Если в `MODEL_DIR` уже лежат `config.json` и веса, скрипт загрузку пропускает, даже когда `MODEL_ID` сменился.
 
