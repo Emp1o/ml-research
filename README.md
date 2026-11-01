@@ -8,13 +8,13 @@
 
 ## Быстрый старт
 
-Из корня репозитория, кластер Minikube уже запущен. Первая команда печатает ключ: вставьте его вместо `REPLACE_ME` в `k8s/secret.yaml` и не коммитьте файл. `port-forward` занимает терминал — `curl` во втором, когда в логах есть `Application startup complete`.
+Из корня репозитория, кластер Minikube уже запущен. Первая команда печатает ключ: вставьте его вместо `REPLACE_ME` в `k8s/base/secret.yaml` и не коммитьте файл. `port-forward` занимает терминал — `curl` во втором, когда в логах есть `Application startup complete`.
 
 ```bash
 openssl rand -hex 32
 docker build -t safeboard-vllm:0.31 .
 docker save safeboard-vllm:0.31 | minikube image load -
-kubectl apply -f k8s/
+kubectl apply -k k8s
 kubectl port-forward svc/safeboard-vllm 8000:8000
 curl -sS http://127.0.0.1:8000/v1/models \
   -H "Authorization: Bearer $(kubectl get secret safeboard-vllm -o jsonpath='{.data.API_KEY}' | base64 -d)"
@@ -43,11 +43,11 @@ Minikube берёт память из VM Docker Desktop, поэтому лими
 | `requirements.txt` | Зафиксированные версии окружения базового образа (`vllm==0.31.0+cpu`) |
 | `logging/` | Подмена логгера vLLM: факт запроса есть, текст промпта и ответа нет |
 | `scripts/download_model.sh` | Скачивание весов на PVC и запуск `vllm serve` |
-| `k8s/` | PVC, Secret, ConfigMap, Deployment, Service |
+| `k8s/` | Kustomize-набор: `kubectl apply -k k8s`. Манифесты в `k8s/base/` (PVC, Secret, ConfigMap, Deployment, Service) |
 
 ## Секреты
 
-В git у `k8s/secret.yaml` только заглушки: `API_KEY` равен `REPLACE_ME`, `HF_TOKEN` пустой. Настоящий ключ API и токен Hugging Face в репозиторий не коммитятся.
+В git у `k8s/base/secret.yaml` только заглушки: `API_KEY` равен `REPLACE_ME`, `HF_TOKEN` пустой. Настоящий ключ API и токен Hugging Face в репозиторий не коммитятся.
 
 Перед деплоем отредактируйте файл локально. Ключ:
 
@@ -82,11 +82,35 @@ docker save safeboard-vllm:0.31 | minikube image load -
 Первому старту нужен исходящий доступ пода к Hugging Face.
 
 ```bash
-kubectl apply -f k8s/
+kubectl apply -k k8s
 kubectl rollout status deployment/safeboard-vllm
 ```
 
 PVC `safeboard-models` — 5 Gi, `ReadWriteOnce`. Сервис `safeboard-vllm` — ClusterIP, порт 8000.
+
+## Kustomize
+
+Манифесты лежат в `k8s/base`: PVC, Secret, ConfigMap, Deployment, Service и `kustomization.yaml`. Корневой `k8s/kustomization.yaml` подключает этот base. Из корня репозитория обе команды собирают один и тот же набор:
+
+```bash
+kubectl apply -k k8s
+kubectl apply -k k8s/base
+```
+
+Посмотреть сборку, не отправляя её в кластер:
+
+```bash
+kubectl kustomize k8s
+```
+
+Один файл по-прежнему применяется напрямую, например после правки ConfigMap:
+
+```bash
+kubectl apply -f k8s/base/configmap.yaml
+kubectl rollout restart deployment/safeboard-vllm
+```
+
+Secret в git — заглушка (`API_KEY: REPLACE_ME`, пустой `HF_TOKEN`). Перед `kubectl apply -k` впишите свой ключ в `k8s/base/secret.yaml` и не коммитьте эту правку.
 
 ## Проверка
 
@@ -133,10 +157,10 @@ kubectl logs -f deployment/safeboard-vllm
 
 ## Параметры ConfigMap
 
-Ключи `k8s/configmap.yaml` попадают в под через `envFrom`. После правки образ пересобирать не нужно:
+Ключи `k8s/base/configmap.yaml` попадают в под через `envFrom`. После правки образ пересобирать не нужно:
 
 ```bash
-kubectl apply -f k8s/configmap.yaml
+kubectl apply -f k8s/base/configmap.yaml
 kubectl rollout restart deployment/safeboard-vllm
 ```
 

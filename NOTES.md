@@ -67,7 +67,9 @@ ConfigMap `safeboard-vllm` подключён через `envFrom`. Скрипт
 
 Secret `safeboard-vllm` подключён тем же `envFrom`. В git лежат заглушки: `API_KEY: REPLACE_ME`, пустой `HF_TOKEN`. Боевые значения задаются локально перед `kubectl apply` и в коммит не входят. Под читает env на старте: после смены Secret его нужно перезапустить.
 
-Имя в ответе `/v1/models` берётся из `SERVED_MODEL_NAME`. Новые параметры: `kubectl apply -f k8s/configmap.yaml` и `kubectl rollout restart deployment/safeboard-vllm`. Новый `MODEL_ID` при старом `MODEL_DIR`, если в каталоге уже есть веса, загрузку не повторяет: скрипт смотрит на файлы, а не на id репозитория.
+Файлы стека — в `k8s/base`. `k8s/base/kustomization.yaml` перечисляет PVC, Secret, ConfigMap, Deployment и Service. `k8s/kustomization.yaml` подключает этот base, поэтому `kubectl apply -k k8s` и `kubectl apply -k k8s/base` отдают в кластер те же объекты: те же имена, лейблы и заглушки Secret.
+
+Имя в ответе `/v1/models` берётся из `SERVED_MODEL_NAME`. Новые параметры: `kubectl apply -f k8s/base/configmap.yaml` и `kubectl rollout restart deployment/safeboard-vllm`. Новый `MODEL_ID` при старом `MODEL_DIR`, если в каталоге уже есть веса, загрузку не повторяет: скрипт смотрит на файлы, а не на id репозитория.
 
 ## Память и Minikube
 
