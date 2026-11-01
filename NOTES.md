@@ -93,6 +93,6 @@ Secret `safeboard-vllm` подключён к контейнеру `vllm` тем
 
 ## Нагрузочный прогон
 
-`scripts/load_test.py` ходит в уже поднятый эндпоинт и манифесты не меняет. Метрики и команда — в README. Таблица там пустая: прогона на Minikube в этой среде не было, числа не подставлялись. Рассуждение про `--max-num-seqs`, `--max-num-batched-tokens`, `MAX_MODEL_LEN` и `VLLM_CPU_KVCACHE_SPACE` — разбор документации и этого CPU-стенда, не результат замера.
+`scripts/load_test.py` ходит в уже поднятый эндпоинт и манифесты не меняет. Метрики и команда — в README. Таблица заполнена прогоном Minikube на Mac M4 (MSK) 2026-11-01 против `safeboard-vllm` (UTC 2026-11-01T13:02:51Z). Рассуждение про `--max-num-seqs`, `--max-num-batched-tokens`, `MAX_MODEL_LEN` и `VLLM_CPU_KVCACHE_SPACE` — разбор документации и этого CPU-стенда, не результат замера.
 
 `python3 scripts/test_load_test.py` проверяет разбор SSE и локальную заглушку. Это не нагрузка на vLLM. `load-test-results.md` скрипт пишет только по `--output` и в git не входит.
