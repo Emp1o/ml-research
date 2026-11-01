@@ -6,6 +6,20 @@
 
 Проверено 1 ноября 2026 (MSK) на Mac M4: `GET /v1/models` с Bearer отвечает 200; после `kubectl delete pod` лог содержит `model weights present … skipping download`, сервер снова доходит до `Application startup complete`, в аргументах движка `enforce_eager True`.
 
+## Быстрый старт
+
+Из корня репозитория, кластер Minikube уже запущен. Первая команда печатает ключ: вставьте его вместо `REPLACE_ME` в `k8s/secret.yaml` и не коммитьте файл. `port-forward` занимает терминал — `curl` во втором, когда в логах есть `Application startup complete`.
+
+```bash
+openssl rand -hex 32
+docker build -t safeboard-vllm:0.31 .
+docker save safeboard-vllm:0.31 | minikube image load -
+kubectl apply -f k8s/
+kubectl port-forward svc/safeboard-vllm 8000:8000
+curl -sS http://127.0.0.1:8000/v1/models \
+  -H "Authorization: Bearer $(kubectl get secret safeboard-vllm -o jsonpath='{.data.API_KEY}' | base64 -d)"
+```
+
 ## Требования
 
 - Docker Desktop. Память VM — **не ниже 8–9 GiB**: модель, KV-cache и Minikube на меньшем лимите уходят в OOM.
