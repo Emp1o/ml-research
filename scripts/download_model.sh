@@ -1,18 +1,19 @@
 #!/usr/bin/env bash
+# Init-container entrypoint (image safeboard-model-downloader).
 # On first start, download HF weights onto the mounted volume.
-# If config.json and weight files are already there, skip the download
-# and start vLLM on that local directory.
-# Model id, dtype, context length, and the other serve flags come from
-# the environment (ConfigMap). HF_TOKEN and API_KEY come from the Secret.
+# If config.json and weight files are already there, skip the download.
+# This script does not start vLLM.
+# Model id and the directory come from the ConfigMap. HF_TOKEN comes from the Secret.
 
 set -euo pipefail
 
+if [[ "$(id -u)" -eq 0 ]]; then
+  echo "download_model.sh must not run as root" >&2
+  exit 1
+fi
+
 : "${MODEL_ID:?MODEL_ID is required}"
 : "${MODEL_DIR:?MODEL_DIR is required}"
-: "${API_KEY:?API_KEY is required}"
-: "${DTYPE:?DTYPE is required}"
-: "${MAX_MODEL_LEN:?MAX_MODEL_LEN is required}"
-: "${GPU_MEMORY_UTILIZATION:?GPU_MEMORY_UTILIZATION is required}"
 
 MODELS_ROOT="${MODELS_ROOT:-/models}"
 export HF_HOME="${HF_HOME:-${MODELS_ROOT}/.hf-home}"
@@ -56,17 +57,3 @@ PY
   fi
   echo "download complete: ${MODEL_DIR}"
 fi
-
-# Local files only. A later start must not call the Hub again.
-export HF_HUB_OFFLINE=1
-export TRANSFORMERS_OFFLINE=1
-
-exec vllm serve "${MODEL_DIR}" \
-  --served-model-name "${SERVED_MODEL_NAME:-${MODEL_ID}}" \
-  --dtype "${DTYPE}" \
-  --max-model-len "${MAX_MODEL_LEN}" \
-  --gpu-memory-utilization "${GPU_MEMORY_UTILIZATION}" \
-  --enforce-eager \
-  --host 0.0.0.0 \
-  --port 8000 \
-  --api-key "${API_KEY}"

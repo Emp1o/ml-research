@@ -2,9 +2,9 @@
 
 Автор: Салитов М.
 
-Локальный OpenAI-совместимый инференс `Qwen/Qwen2.5-0.5B-Instruct` на CPU в Minikube. Образ `safeboard-vllm:0.31` собран из `vllm/vllm-openai-cpu:v0.31.0-arm64` (vLLM 0.31.0). Веса качаются с Hugging Face на PVC при первом старте пода и дальше читаются с тома.
+Локальный OpenAI-совместимый инференс `Qwen/Qwen2.5-0.5B-Instruct` на CPU в Minikube. Образ `safeboard-vllm:0.31` собран из `vllm/vllm-openai-cpu:v0.31.0-arm64` (vLLM 0.31.0). Веса качает initContainer `download-model` на легковесном rootless-образе `safeboard-model-downloader:0.1` и кладёт их на PVC. Основной контейнер `vllm` Hugging Face не вызывает: он читает локальный каталог с тома.
 
-Проверено 1 ноября 2026 (MSK) на Mac M4: `GET /v1/models` с Bearer отвечает 200; после `kubectl delete pod` лог содержит `model weights present … skipping download`, сервер снова доходит до `Application startup complete`, в аргументах движка `enforce_eager True`.
+Проверено 1 ноября 2026 (MSK) на Mac M4 для прежней схемы, где скачивание жило в entrypoint основного контейнера: `GET /v1/models` с Bearer отвечает 200; после `kubectl delete pod` сервер снова доходит до `Application startup complete`, в аргументах движка `enforce_eager True`. Строка `model weights present … skipping download` теперь в логе initContainer `download-model`. Контейнер `vllm` веса не скачивает.
 
 ## Быстрый старт
 
@@ -13,7 +13,9 @@
 ```bash
 openssl rand -hex 32
 docker build -t safeboard-vllm:0.31 .
+docker build -f Dockerfile.downloader -t safeboard-model-downloader:0.1 .
 docker save safeboard-vllm:0.31 | minikube image load -
+docker save safeboard-model-downloader:0.1 | minikube image load -
 kubectl apply -k k8s
 kubectl port-forward svc/safeboard-vllm 8000:8000
 curl -sS http://127.0.0.1:8000/v1/models \
@@ -39,10 +41,13 @@ Minikube берёт память из VM Docker Desktop, поэтому лими
 
 | Путь | Назначение |
 |---|---|
-| `Dockerfile` | Rootless-образ: пользователь `safeboard` (uid 1000), патч логов, скрипт старта |
+| `Dockerfile` | Rootless-образ vLLM: пользователь `safeboard` (uid 1000), патч логов, скрипт `serve_model.sh` |
+| `Dockerfile.downloader` | Отдельный легковесный rootless-образ только для скачивания весов (uid/gid 1000). Не образ vLLM |
 | `requirements.txt` | Зафиксированные версии окружения базового образа (`vllm==0.31.0+cpu`) |
+| `requirements-downloader.txt` | Зафиксированные зависимости легковесного образа (`huggingface_hub==1.33.0` и его зависимости) |
 | `logging/` | Подмена логгера vLLM: факт запроса есть, текст промпта и ответа нет |
-| `scripts/download_model.sh` | Скачивание весов на PVC и запуск `vllm serve` |
+| `scripts/download_model.sh` | Скачивание весов на PVC. Если `config.json` и веса уже есть — пропуск. vLLM не запускает |
+| `scripts/serve_model.sh` | Запуск `vllm serve` с локального каталога, без обращения к Hugging Face |
 | `k8s/` | Kustomize-набор: `kubectl apply -k k8s`. Манифесты в `k8s/base/` (PVC, Secret, ConfigMap, Deployment, Service) |
 
 ## Секреты
@@ -65,21 +70,25 @@ openssl rand -hex 32
 
 ```bash
 docker build -t safeboard-vllm:0.31 .
+docker build -f Dockerfile.downloader -t safeboard-model-downloader:0.1 .
 ```
 
-Веса в образ не входят. Тег должен совпасть с `image` в Deployment: у контейнера `imagePullPolicy: Never`.
+Веса ни в один образ не входят. Теги должны совпасть с `image` в Deployment: у обоих контейнеров `imagePullPolicy: Never`.
 
-## Загрузка образа в Minikube
+Легковесный образ собирается из `Dockerfile.downloader`, база `python:3.12.16-slim-bookworm`. Внутри только `scripts/download_model.sh` и зафиксированный `huggingface_hub`. Пользователь `safeboard`, uid и gid 1000 — те же, что у пода и у образа vLLM, чтобы файлы на PVC читал основной контейнер. Это не образ vLLM и не его entrypoint.
 
-Образ должен оказаться в демоне Minikube. Прямой `minikube image load safeboard-vllm:0.31` на этой связке может зависнуть. Рабочий путь:
+## Загрузка образов в Minikube
+
+Оба образа должны оказаться в демоне Minikube. Прямой `minikube image load` на этой связке может зависнуть. Рабочий путь:
 
 ```bash
 docker save safeboard-vllm:0.31 | minikube image load -
+docker save safeboard-model-downloader:0.1 | minikube image load -
 ```
 
 ## Деплой
 
-Первому старту нужен исходящий доступ пода к Hugging Face.
+Первому старту нужен исходящий доступ initContainer `download-model` к Hugging Face. Контейнер `vllm` за весами в сеть не ходит.
 
 ```bash
 kubectl apply -k k8s
@@ -115,10 +124,11 @@ Secret в git — заглушка (`API_KEY: REPLACE_ME`, пустой `HF_TOKE
 ## Проверка
 
 ```bash
-kubectl logs -f deployment/safeboard-vllm
+kubectl logs -f deployment/safeboard-vllm -c download-model
+kubectl logs -f deployment/safeboard-vllm -c vllm
 ```
 
-Дождитесь `Application startup complete`. В другом терминале:
+В `download-model` на первом старте — `downloading …` и `download complete: …`. В `vllm` дождитесь `Application startup complete`. В другом терминале:
 
 ```bash
 kubectl port-forward svc/safeboard-vllm 8000:8000
@@ -150,10 +160,11 @@ curl -sS http://127.0.0.1:8000/v1/chat/completions \
 
 ```bash
 kubectl delete pod -l app=safeboard-vllm
-kubectl logs -f deployment/safeboard-vllm
+kubectl logs deployment/safeboard-vllm -c download-model
+kubectl logs -f deployment/safeboard-vllm -c vllm
 ```
 
-В логе — `model weights present … skipping download`. Дальше `vllm serve` читает локальный каталог (`HF_HUB_OFFLINE=1`).
+В логе initContainer — `model weights present … skipping download`. Контейнер `vllm` пишет `serving local weights at …` и читает локальный каталог (`HF_HUB_OFFLINE=1` выставляет `scripts/serve_model.sh`).
 
 ## Параметры ConfigMap
 
@@ -176,30 +187,31 @@ kubectl rollout restart deployment/safeboard-vllm
 | `VLLM_NO_USAGE_STATS` | `1` | Отказ от usage stats vLLM |
 | `DO_NOT_TRACK` | `1` | Тот же отказ: процесс не шлёт телеметрию |
 
-Другая модель — новые `MODEL_ID` и `MODEL_DIR` на том же PVC. Старый каталог на томе остаётся. Если в `MODEL_DIR` уже лежат `config.json` и веса, скрипт загрузку пропускает, даже когда `MODEL_ID` сменился.
+Другая модель — новые `MODEL_ID` и `MODEL_DIR` на том же PVC. Старый каталог на томе остаётся. Если в `MODEL_DIR` уже лежат `config.json` и веса, initContainer загрузку пропускает, даже когда `MODEL_ID` сменился.
 
-`--enforce-eager` задаёт `scripts/download_model.sh`. В ConfigMap этого ключа нет: скрипт копируется в образ при сборке. На прогоне в аргументах движка было `enforce_eager True`.
+`--enforce-eager` задаёт `scripts/serve_model.sh`. В ConfigMap этого ключа нет: скрипт копируется в образ vLLM при сборке. На прогоне в аргументах движка было `enforce_eager True`.
 
 ## Замечания
 
 - Инференс только на CPU.
-- Контейнер непривилегированный: uid/gid 1000, в Deployment `runAsNonRoot: true`.
+- Скачивание весов вынесено из entrypoint основного контейнера в initContainer `download-model`. Образ `safeboard-model-downloader:0.1` собирается отдельным `Dockerfile.downloader` и не содержит vLLM.
+- Оба контейнера непривилегированные. У пода `runAsUser`, `runAsGroup` и `fsGroup` равны 1000, `runAsNonRoot: true`. Тот же uid/gid у легковесного образа. InitContainer получает `MODEL_ID`, `MODEL_DIR` и `HF_TOKEN`. `API_KEY` в него не передаётся.
 - Лог пишет факт обращения (id запроса, число токенов, `finish_reason`). Текст промпта и сгенерированный ответ в stdout/stderr не попадают.
 - Реплика одна, стратегия `Recreate` — том `ReadWriteOnce`.
 - `/dev/shm` — `emptyDir` в памяти, лимит 1 Gi (дефолтных 64 MiB воркерам vLLM мало).
 
 ## Ожидаемые фрагменты
 
-Первый старт:
+Первый старт, контейнер `download-model`:
 
 ```text
 downloading Qwen/Qwen2.5-0.5B-Instruct into /models/Qwen2.5-0.5B-Instruct
 download complete: /models/Qwen2.5-0.5B-Instruct
 ```
 
-Дальше в логе vLLM: `Application startup complete` и `enforce_eager True`.
+Дальше в логе контейнера `vllm`: `serving local weights at /models/Qwen2.5-0.5B-Instruct`, затем `Application startup complete` и `enforce_eager True`.
 
-Старт после удаления пода:
+Старт после удаления пода, контейнер `download-model`:
 
 ```text
 model weights present at /models/Qwen2.5-0.5B-Instruct; skipping download

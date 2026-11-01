@@ -1,5 +1,8 @@
-# Local image, loaded with: minikube image load safeboard-vllm:0.31
-# Pod command is the download script (image ENTRYPOINT remains "vllm serve").
+# Local images. Load both into Minikube before apply:
+#   docker save safeboard-vllm:0.31 | minikube image load -
+#   docker save safeboard-model-downloader:0.1 | minikube image load -
+# initContainer download-model fills the PVC. The vLLM container only serves.
+# Pod securityContext (uid/gid/fsGroup 1000, runAsNonRoot) applies to both.
 # Recreate keeps the ReadWriteOnce model volume on a single pod.
 apiVersion: apps/v1
 kind: Deployment
@@ -24,11 +27,35 @@ spec:
         runAsGroup: 1000
         fsGroup: 1000
         runAsNonRoot: true
+      initContainers:
+        - name: download-model
+          image: safeboard-model-downloader:0.1
+          imagePullPolicy: Never
+          command: ["/opt/safeboard/download_model.sh"]
+          env:
+            - name: MODEL_ID
+              valueFrom:
+                configMapKeyRef:
+                  name: safeboard-vllm
+                  key: MODEL_ID
+            - name: MODEL_DIR
+              valueFrom:
+                configMapKeyRef:
+                  name: safeboard-vllm
+                  key: MODEL_DIR
+            - name: HF_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: safeboard-vllm
+                  key: HF_TOKEN
+          volumeMounts:
+            - name: models
+              mountPath: /models
       containers:
         - name: vllm
           image: safeboard-vllm:0.31
           imagePullPolicy: Never
-          command: ["/opt/safeboard/download_model.sh"]
+          command: ["/opt/safeboard/serve_model.sh"]
           ports:
             - name: http
               containerPort: 8000
