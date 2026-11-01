@@ -1,0 +1,7 @@
+# Deploy the stack with `kubectl apply -k k8s`.
+# This root points at k8s/base; `kubectl apply -k k8s/base` builds the same objects.
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+resources:
+  - base
