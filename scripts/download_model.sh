@@ -66,6 +66,7 @@ exec vllm serve "${MODEL_DIR}" \
   --dtype "${DTYPE}" \
   --max-model-len "${MAX_MODEL_LEN}" \
   --gpu-memory-utilization "${GPU_MEMORY_UTILIZATION}" \
+  --enforce-eager \
   --host 0.0.0.0 \
   --port 8000 \
   --api-key "${API_KEY}"
