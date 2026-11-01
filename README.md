@@ -10,6 +10,8 @@
 
 Из корня репозитория, кластер Minikube уже запущен. Первая команда печатает ключ: вставьте его вместо `REPLACE_ME` в `k8s/base/secret.yaml` и не коммитьте файл. `port-forward` занимает терминал — `curl` во втором, когда в логах есть `Application startup complete`.
 
+Сборка `safeboard-vllm:0.31` — только `linux/arm64`. На Intel/AMD (x86_64) команда `docker build -t safeboard-vllm:0.31 .` обычно падает с `exec format error`. Подробности и проверка манифеста — в разделе «Требования».
+
 ```bash
 openssl rand -hex 32
 docker build -t safeboard-vllm:0.31 .
@@ -27,7 +29,17 @@ curl -sS http://127.0.0.1:8000/v1/models \
 - Docker Desktop. Память VM — **не ниже 8–9 GiB**: модель, KV-cache и Minikube на меньшем лимите уходят в OOM.
 - `kubectl`
 - Minikube с драйвером `docker`
-- Узел **arm64**. Базовый образ — `v0.31.0-arm64`; сборка и прогон проверены на Mac M4.
+- Узел **arm64**. Сборка и прогон проверены на Mac M4.
+
+Образ vLLM основан на `vllm/vllm-openai-cpu:v0.31.0-arm64`: в манифесте только `linux/arm64`. На Intel/AMD (x86_64) первая команда `docker build -t safeboard-vllm:0.31 .` обычно падает на первом `RUN` в Dockerfile с `exec format error`. Образ при этом может скачаться, часто с предупреждением о платформе. Без QEMU/binfmt это ожидаемо. Если Docker Desktop эмулирует архитектуру и сборка проходит, сбой может сдвинуться на запуск пода.
+
+`Dockerfile.downloader` на базе `python:3.12-slim` (`python:3.12.16-slim-bookworm`) — multi-arch. Ограничение arm64 задаёт образ vLLM, не этот Dockerfile.
+
+Проверка манифеста базового образа. Ожидается только `linux/arm64`:
+
+```bash
+docker buildx imagetools inspect vllm/vllm-openai-cpu:v0.31.0-arm64
+```
 
 Если кластера ещё нет (Docker Desktop уже запущен):
 
