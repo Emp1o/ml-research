@@ -1,0 +1,35 @@
+# Lightweight rootless image for the Kubernetes initContainer only.
+# Downloads Hugging Face weights onto a shared volume. Not the vLLM image.
+# Patch tag (not python:slim): multi-arch, including arm64 for Minikube on Apple Silicon.
+FROM python:3.12.16-slim-bookworm
+
+COPY requirements-downloader.txt /opt/safeboard/requirements-downloader.txt
+COPY scripts/download_model.sh /opt/safeboard/download_model.sh
+
+# Shebang is bash. uid 1000 needs useradd (passwd) and nologin (login).
+# python:3.12.16-slim-bookworm already ships those packages; the install
+# keeps the image from relying on that staying true.
+# uid/gid 1000 matches the pod securityContext and the vLLM image user,
+# so files on the PVC stay readable by the main container.
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends bash login passwd \
+    && rm -rf /var/lib/apt/lists/* \
+    && pip install --no-cache-dir -r /opt/safeboard/requirements-downloader.txt \
+    && chmod 755 /opt/safeboard/download_model.sh \
+    && groupadd --gid 1000 safeboard \
+    && useradd --create-home --uid 1000 --gid 1000 --shell /usr/sbin/nologin safeboard \
+    && mkdir -p /home/safeboard/.cache/huggingface \
+    && chown -R safeboard:safeboard /home/safeboard
+
+# Hub cache stays off the PVC (same idea as the vLLM image). The snapshot
+# written to MODEL_DIR is what later starts reuse. huggingface_hub 1.33
+# copies real files into local_dir and does not symlink them back here.
+ENV HOME=/home/safeboard \
+    HF_HOME=/home/safeboard/.cache/huggingface \
+    HF_HUB_ENABLE_HF_TRANSFER=0 \
+    PYTHONUNBUFFERED=1
+
+WORKDIR /home/safeboard
+USER safeboard
+
+ENTRYPOINT ["/opt/safeboard/download_model.sh"]
