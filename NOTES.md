@@ -90,3 +90,9 @@ Secret `safeboard-vllm` подключён к контейнеру `vllm` тем
 Запас памяти VM Docker Desktop для этого стенда — 8–9 GiB. Образ vLLM — arm64; узел Minikube с драйвером docker на Mac M4 тоже arm64. Легковесный образ — multi-arch манифест `python:3.12.16-slim-bookworm`, на M4 собирается arm64. Прямой `minikube image load` может зависнуть. Надёжный путь — `docker save safeboard-vllm:0.31 | minikube image load -` и то же для `safeboard-model-downloader:0.1`.
 
 Проверка 1 ноября 2026 (MSK), Mac M4, Minikube, ещё со скачиванием в entrypoint основного контейнера: под поднялся, в логе есть `Application startup complete` и `enforce_eager True`, `GET /v1/models` с Bearer вернул 200. После `kubectl delete pod` следующий старт написал `model weights present … skipping download` и снова дошёл до готовности сервера. Та же строка пропуска теперь печатается initContainer `download-model`; контейнер `vllm` только отдаёт локальный снимок.
+
+## Нагрузочный прогон
+
+`scripts/load_test.py` ходит в уже поднятый эндпоинт и манифесты не меняет. Метрики и команда — в README. Таблица там пустая: прогона на Minikube в этой среде не было, числа не подставлялись. Рассуждение про `--max-num-seqs`, `--max-num-batched-tokens`, `MAX_MODEL_LEN` и `VLLM_CPU_KVCACHE_SPACE` — разбор документации и этого CPU-стенда, не результат замера.
+
+`python3 scripts/test_load_test.py` проверяет разбор SSE и локальную заглушку. Это не нагрузка на vLLM. `load-test-results.md` скрипт пишет только по `--output` и в git не входит.
